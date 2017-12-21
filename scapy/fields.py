@@ -999,6 +999,213 @@ class BitEnumField(BitField, _EnumField):
     def i2repr(self, pkt, x):
         return _EnumField.i2repr(self, pkt, x)
 
+
+class LEBitFieldSequenceException(Scapy_Exception):
+    pass
+
+
+class LEBitField(BitField):
+    """
+    a little endian version of the BitField
+    """
+
+    def _check_field_type(self, pkt, index):
+        """
+        check if the field addressed by given index relative to this field
+        shares type of this field so we can catch a mix of LEBitField
+        and BitField/other types
+        """
+        my_idx = pkt.fields_desc.index(self)
+        try:
+            next_field = pkt.fields_desc[my_idx + index]
+            if type(next_field) is not LEBitField and \
+               next_field.__class__.__base__ is not LEBitField:
+                raise LEBitFieldSequenceException('field after field {} must '
+                                                  'be of type LEBitField or '
+                                                  'derived classes'.format(self.name))
+        except IndexError as e:
+            # no more fields -> error
+            raise LEBitFieldSequenceException('Missing further LEBitField '
+                                              'based fields after field '
+                                              '{} '.format(self.name))
+
+    def addfield(self, pkt, s, val):
+        """
+
+        :param pkt: packet instance the raw string s and field belongs to
+        :param s:   raw string representing the frame
+        :param val: value
+        :return: final raw string, tuple (s, bitsdone, data) if in between bit field
+
+        as we don't know the final size of the full bitfield we need to accumulate the data.
+        if we reach a field that ends at a octet boundary, we build the whole string
+
+        """
+        if type(s) is tuple and len(s) == 4:
+            s, bitsdone, data, lower_field_type = s
+            self._check_field_type(pkt, -1)
+        else:
+            # this is the first bit field in the set
+            bitsdone = 0
+            data = []
+
+        bitsdone += self.size
+        data.append((self.size, self.i2m(pkt, val)))
+
+        if bitsdone % 8:
+            # somewhere in between bit 0 .. 7 - next field should add more bits...
+            self._check_field_type(pkt, 1)
+            return s, bitsdone, data, type(LEBitField)
+        else:
+            data.reverse()
+            octet = 0
+            remaining_len = 8
+            octets = str()
+            for size, val in data:
+
+                while True:
+                    if size < remaining_len:
+                        remaining_len = remaining_len - size
+                        octet |= val << remaining_len
+                        break
+
+                    elif size > remaining_len:
+                        # take the leading bits and add them to octet
+                        size -= remaining_len
+                        octet |= val >> size
+                        octets = struct.pack('!B', octet) + octets
+
+                        octet = 0
+                        remaining_len = 8
+                        # delete all consumed bits
+                        # TODO: do we need to add a check for bitfields > 64 bits to catch overruns here?
+                        val &= ((2 ** size) - 1)
+                        continue
+                    else:
+                        # size == remaining len
+                        octet |= val
+                        octets = struct.pack('!B', octet) + octets
+                        octet = 0
+                        remaining_len = 8
+                        break
+
+        return s + octets
+
+    def getfield(self, pkt, s):
+
+        """
+        extract data from raw str
+
+        collect all instances belonging to the bit field set.
+        if we reach a field that ends at a octet boundary, dissect the whole bit field at once
+
+        :param pkt: packet instance the field belongs to
+        :param s: raw string representing the frame -or- tuple containing raw str, number of bits and array of fields
+        :return: tuple containing raw str, number of bits and array of fields -or- remaining raw str and value of this
+        """
+
+        if type(s) is tuple and len(s) == 3:
+            s, bits_in_set, fields = s
+        else:
+            bits_in_set = 0
+            fields = []
+
+        bits_in_set += self.size
+
+        fields.append(self)
+
+        if bits_in_set % 8:
+            # we are in between the bitfield
+            return (s, bits_in_set, fields), None
+
+        else:
+            cur_val = 0
+            cur_val_bit_idx = 0
+            this_val = 0
+
+            field_idx = 0
+            field = fields[field_idx]
+            field_required_bits = field.size
+            idx = 0
+
+            for octet in s[:bits_in_set / 8]:
+
+                octet = struct.unpack('!B', octet)[0]
+                idx += 1
+
+                octet_bits_left = 8
+
+                while octet_bits_left:
+
+                    if field_required_bits == octet_bits_left:
+                        # whole field fits into remaining bits
+                        # as this also signals byte-alignment this should exit the inner and outer loop
+                        cur_val |= octet << cur_val_bit_idx
+                        pkt.fields[field.name] = cur_val
+
+                        '''
+                        TODO: check if do_dessect() needs a non-None check for assignment to raw_packet_cache_fields
+
+                        setfieldval() is evil as it sets raw_packet_cache_fields to None - but this attribute
+                        is accessed in do_dissect() without checking for None... exception is catched and the
+                        user ends up with a layer decoded as raw...
+
+                        pkt.setfieldval(field.name, int(bit_str[:field.size], 2))
+                        '''
+
+                        octet_bits_left = 0
+
+                        this_val = cur_val
+
+                    elif field_required_bits < octet_bits_left:
+                        # pick required bits
+                        cur_val |= (octet & ((2 ** field_required_bits) - 1)) << cur_val_bit_idx
+                        pkt.fields[field.name] = cur_val
+
+                        # remove consumed bits
+                        octet >>= field_required_bits
+                        octet_bits_left -= field_required_bits
+
+                        # and move to the next field
+                        field_idx += 1
+                        field = fields[field_idx]
+                        field_required_bits = field.size
+                        cur_val_bit_idx = 0
+                        cur_val = 0
+
+                    elif field_required_bits > octet_bits_left:
+                        # take remaining bits
+                        cur_val |= octet << cur_val_bit_idx
+
+                        cur_val_bit_idx += octet_bits_left
+                        field_required_bits -= octet_bits_left
+                        octet_bits_left = 0
+
+            return s[bits_in_set / 8:], this_val
+
+
+class LEBitFieldLenField(LEBitField):
+    __slots__ = ["length_of", "count_of", "adjust"]
+
+    def __init__(self, name, default, size, length_of=None, count_of=None, adjust=lambda pkt, x: x):
+        LEBitField.__init__(self, name, default, size)
+        self.length_of = length_of
+        self.count_of = count_of
+        self.adjust = adjust
+
+    def i2m(self, pkt, x):
+        return FieldLenField.i2m.im_func(self, pkt, x)
+
+
+class LEBitEnumField(LEBitField, _EnumField):
+    __slots__ = EnumField.__slots__
+
+    def __init__(self, name, default, size, enum):
+        _EnumField.__init__(self, name, default, enum)
+        self.rev = size < 0
+        self.size = abs(size)
+
+
 class ShortEnumField(EnumField):
     __slots__ = EnumField.__slots__
     def __init__(self, name, default, enum):
