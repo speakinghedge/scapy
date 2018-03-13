@@ -22,3 +22,65 @@ assert(s == b'\xff\xff\xff\xff\xff\xff\x00\x01\x02\x04\x05\x00\x88G\x00\x000\x00
 
 p = Ether(s)
 assert(IPv6 in p and isinstance(p[MPLS].payload, MPLS))
+
+= MPLS - build/dissection
+
+p1 = MPLS()/IP()/UDP()
+assert(p1[MPLS].s == 1)
+p2 = MPLS()/MPLS()/IP()/UDP()
+assert(p2[MPLS].s == 0)
+
+lyr = p1.getlayer(MPLS)
+assert(lyr)
+lyr = p1.getlayer(IP)
+assert(lyr)
+lyr = p2.getlayer(MPLS)
+assert(lyr)
+lyr = p2.getlayer(MPLS, nb=2)
+assert(lyr)
+lyr = p2.getlayer(IP)
+assert(lyr)
+
+= MPLS encapsulated Ethernet with CW - build/dissection
+p = Ether(dst="11:11:11:11:11:11", src="22:22:22:22:22:22")
+p /= MPLS(label=1)/EoMCW(seq=1234)
+p /= Ether(dst="33:33:33:33:33:33", src="44:44:44:44:44:44")/IP()
+p = Ether(raw(p))
+assert(p[EoMCW].zero == 0)
+assert(p[EoMCW].reserved == 0)
+assert(p[EoMCW].seq == 1234)
+
+=  MPLS encapsulated Ethernet without CW - build/dissection
+p = Ether(dst="11:11:11:11:11:11", src="22:22:22:22:22:22")
+p /= MPLS(label=2)/MPLS(label=1)
+p /= Ether(dst="33:33:33:33:33:33", src="44:44:44:44:44:44")/IP()
+p = Ether(raw(p))
+assert(p[Ether:2].type == 0x0800)
+
+try:
+    p[EoMCW]
+    assert False
+except IndexError:
+    pass
+
+assert(p[Ether:2].type == 0x0800)
+
+= MPLS encapsulated IP - build/dissection
+p = Ether(dst="11:11:11:11:11:11", src="22:22:22:22:22:22")
+p /= MPLS(label=1)/IP()
+p = Ether(raw(p))
+
+try:
+    p[EoMCW]
+    assert False
+except IndexError:
+    pass
+
+try:
+    p[Ether:2]
+    assert False
+except IndexError:
+    pass
+
+lyr = p.getlayer(IP)
+assert(lyr)
