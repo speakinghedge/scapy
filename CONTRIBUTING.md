@@ -89,6 +89,10 @@ New protocols can go either in `scapy/layers` or to
 on common networks, while protocols in `scapy/contrib` should be
 uncommon or specific.
 
+Tests for new protocols in `scapy/contrib` should go to `test/contrib` 
+(e.g. tests for scapy/contrib/foo.py should be added to test/contrib/foo.uts) while
+tests for protocols in `scapy/layers` should go to `test/regression.uts`.
+
 ### Features
 
 Protocol-related features should be implemented within the same module
