@@ -1,11 +1,11 @@
 {
   "testfiles": [
     "*.uts",
-    "..\\scapy\\contrib\\*.uts"
+    "..\\test\\contrib\\*.uts"
   ],
   "onlyfailed": true,
   "preexec": {
-    "..\\scapy\\contrib\\*.uts": "load_contrib(\"%name%\")",
+    "..\\test\\contrib\\*.uts": "load_contrib(\"%name%\")",
     "cert.uts": "load_layer(\"tls\")",
     "sslv2.uts": "load_layer(\"tls\")",
     "tls*.uts": "load_layer(\"tls\")"
